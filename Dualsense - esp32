@@ -1,0 +1,140 @@
+
+#include <Bluepad32.h>
+
+ControllerPtr control = nullptr;
+
+// ESP32 TX2 = GPIO17
+HardwareSerial UART_NUCLEO(2);
+
+// Bits del control
+#define BTN_IZQUIERDA 0x01
+#define BTN_DERECHA   0x02
+#define BTN_SALTO     0x04
+#define BTN_DISPARO   0x08
+#define BTN_POWERUP   0x10
+#define BTN_PAUSA     0x20
+#define BTN_CUADRADO  0x40  // NUEVO
+
+// Para detectar una sola pulsacion
+bool cuadradoAnterior = false;
+
+void onConnectedController(ControllerPtr ctl)
+{
+    control = ctl;
+    cuadradoAnterior = false;
+    Serial.println("Control PS5 conectado");
+}
+
+void onDisconnectedController(ControllerPtr ctl)
+{
+    if (control == ctl)
+    {
+        control = nullptr;
+        cuadradoAnterior = false;
+        Serial.println("Control desconectado");
+    }
+}
+
+void setup()
+{
+    Serial.begin(115200);
+
+    // RX2 = GPIO16, TX2 = GPIO17
+    UART_NUCLEO.begin(115200, SERIAL_8N1, 16, 17);
+
+    BP32.setup(&onConnectedController,
+               &onDisconnectedController);
+
+    Serial.println("Esperando control PS5...");
+}
+
+void loop()
+{
+    BP32.update();
+
+    static uint32_t ultimoEnvio = 0;
+
+    // Enviar estado cada 20 ms
+    if (millis() - ultimoEnvio >= 20)
+    {
+        ultimoEnvio = millis();
+
+        uint8_t estado = 0;
+
+        if (control != nullptr &&
+            control->isConnected() &&
+            control->isGamepad())
+        {
+            int ejeX = control->axisX();
+
+            // Joystick izquierdo
+            if (ejeX < -150)
+                estado |= BTN_IZQUIERDA;
+
+            if (ejeX > 150)
+                estado |= BTN_DERECHA;
+
+            // Cruceta como alternativa
+            uint8_t dpad = control->dpad();
+
+            if (dpad & DPAD_LEFT)
+                estado |= BTN_IZQUIERDA;
+
+            if (dpad & DPAD_RIGHT)
+                estado |= BTN_DERECHA;
+
+            // DualSense: X = boton inferior
+            if (control->a())
+                estado |= BTN_SALTO;
+
+            // R2
+            if (control->throttle() > 100)
+                estado |= BTN_DISPARO;
+
+            // Circulo: power-up
+            if (control->b())
+                estado |= BTN_POWERUP;
+
+            // Options: pausa
+            if (control->miscStart())
+                estado |= BTN_PAUSA;
+
+            // NUEVO: CUADRADO
+            // En Bluepad32, X corresponde a cuadrado
+            bool cuadradoActual = control->x();
+
+            if (cuadradoActual)
+            {
+                estado |= BTN_CUADRADO;
+
+                // Vibrar solamente al presionar
+                if (!cuadradoAnterior)
+                {
+                    control->playDualRumble(
+                        0,     // Retraso inicial
+                        150,   // Duracion en ms
+                        0x80,  // Motor debil
+                        0xC0   // Motor fuerte
+                    );
+
+                    Serial.println(
+                        "CUADRADO PRESIONADO - VIBRACION"
+                    );
+                }
+            }
+
+            cuadradoAnterior = cuadradoActual;
+        }
+        else
+        {
+            cuadradoAnterior = false;
+        }
+
+        // Cabecera + estado + comprobacion
+        UART_NUCLEO.write(0xA5);
+        UART_NUCLEO.write(estado);
+        UART_NUCLEO.write((uint8_t)(estado ^ 0xFF));
+
+        Serial.printf("Estado: 0x%02X\n", estado);
+    }
+}
